@@ -75,3 +75,21 @@ uvicorn app.main:app --host 127.0.0.1 --port 8002
 ## 7) Pagos con tarjeta
 - Producción: define `STRIPE_SECRET_KEY` y `ENABLE_FAKE_PAYMENTS=false`.
 - Desarrollo: `ENABLE_FAKE_PAYMENTS=true` (aprobación simulada).
+
+## 8) Setup rápido en Ubuntu/EC2
+```bash
+git clone https://github.com/IDS-HUGO/DulceMoment_API.git backend-fastapi
+cd backend-fastapi
+bash scripts/setup_ubuntu.sh
+bash scripts/run_api.sh
+```
+
+Variables opcionales para correr:
+- `HOST` (default `0.0.0.0`)
+- `PORT` (default `8000`)
+- `RELOAD=true` para modo desarrollo
+
+Ejemplo:
+```bash
+HOST=0.0.0.0 PORT=8002 RELOAD=true bash scripts/run_api.sh
+```
