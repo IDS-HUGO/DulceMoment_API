@@ -18,6 +18,7 @@ from app.db.models import (
     ProductOption,
     RevokedToken,
     User,
+    UserRole,
 )
 from app.schemas.schemas import (
     AuthResponse,
@@ -51,6 +52,17 @@ router = APIRouter()
 security = HTTPBearer(auto_error=False)
 
 
+def _ensure_single_store_rule(db: Session, role: UserRole):
+    if role != UserRole.store:
+        return
+    store_count = db.query(User).filter(User.role == UserRole.store).count()
+    if store_count >= 1:
+        raise HTTPException(
+            status_code=403,
+            detail="Ya existe un vendedor. Solo se permite un vendedor en la plataforma.",
+        )
+
+
 @router.get("/health")
 def health():
     return {"status": "ok", "app": settings.app_name}
@@ -61,6 +73,7 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     exists = db.query(User).filter(User.email == payload.email).first()
     if exists:
         raise HTTPException(status_code=400, detail="Email ya registrado")
+    _ensure_single_store_rule(db, payload.role)
     user = User(
         name=payload.name,
         email=payload.email,
@@ -78,13 +91,7 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
     exists = db.query(User).filter(User.email == payload.email).first()
     if exists:
         raise HTTPException(status_code=400, detail="Email ya registrado")
-
-    # Validación: máximo 1 usuario con rol "store"
-    from app.db.models import UserRole
-    if payload.role == UserRole.store:
-        store_count = db.query(User).filter(User.role == UserRole.store).count()
-        if store_count >= 1:
-            raise HTTPException(status_code=403, detail="Ya existe un vendedor. Solo se permite un vendedor en la plataforma.")
+    _ensure_single_store_rule(db, payload.role)
 
     user = User(
         name=payload.name,
