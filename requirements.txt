@@ -1,0 +1,10 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlalchemy==2.0.37
+pydantic-settings==2.8.0
+python-dotenv==1.0.1
+httpx==0.28.1
+firebase-admin==6.6.0
+stripe==11.6.0
+python-jose[cryptography]==3.3.0
+cloudinary==1.44.1
