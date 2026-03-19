@@ -9,10 +9,12 @@ from app.db.seed import seed_data
 
 app = FastAPI(title=settings.app_name)
 
+allow_all_origins = settings.cors_allow_all
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
-    allow_credentials=True,
+    allow_origins=["*"] if allow_all_origins else settings.cors_origins_list,
+    allow_credentials=not allow_all_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

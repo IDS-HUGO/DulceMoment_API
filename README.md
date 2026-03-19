@@ -11,6 +11,10 @@ API para cliente y tienda con:
 - auth de login/register con roles customer/store
 - autorización JWT para endpoints protegidos
 
+## URL de producción
+- Base URL: `https://ferluna.online`
+- Alternativa: `https://www.ferluna.online`
+
 ## 1) Requisitos
 - Python 3.11+
 

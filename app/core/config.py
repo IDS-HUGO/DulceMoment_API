@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     app_name: str = "DulceMoment API"
     api_v1_prefix: str = "/api/v1"
     database_url: str = "sqlite:///./dulcemoment.db"
-    cors_origins: str = "http://10.0.2.2:8000,http://localhost:8000"
+    cors_origins: str = "*"
     stripe_secret_key: str = ""
     stripe_currency: str = "mxn"
     enable_fake_payments: bool = True
@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     cloudinary_folder: str = "dulcemoment"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @property
+    def cors_allow_all(self) -> bool:
+        value = self.cors_origins.strip()
+        return value == "*" or value.lower() == "all"
 
     @property
     def cors_origins_list(self) -> list[str]:
