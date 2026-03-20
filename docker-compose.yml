@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: dulcemoment_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: dulcemoment_db
+      MYSQL_USER: dulcemoment
+      MYSQL_PASSWORD: dulcemoment_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  api:
+    build: .
+    container_name: dulcemoment_api
+    environment:
+      APP_NAME: "DulceMoment API"
+      API_V1_PREFIX: "/api/v1"
+      DATABASE_URL: "mysql+pymysql://dulcemoment:dulcemoment_password@mysql:3306/dulcemoment_db"
+      CORS_ORIGINS: "*"
+      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY}"
+      STRIPE_CURRENCY: "mxn"
+      ENABLE_FAKE_PAYMENTS: "true"
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:-dulcemoment-change-this-secret}"
+      JWT_ALGORITHM: "HS256"
+      JWT_EXPIRE_MINUTES: "1440"
+      JWT_REFRESH_EXPIRE_MINUTES: "43200"
+      CLOUDINARY_CLOUD_NAME: "${CLOUDINARY_CLOUD_NAME}"
+      CLOUDINARY_API_KEY: "${CLOUDINARY_API_KEY}"
+      CLOUDINARY_API_SECRET: "${CLOUDINARY_API_SECRET}"
+      CLOUDINARY_FOLDER: "dulcemoment"
+    ports:
+      - "8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    volumes:
+      - .:/app
+
+volumes:
+  mysql_data:

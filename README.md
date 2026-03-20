@@ -81,11 +81,48 @@ uvicorn app.main:app --host 127.0.0.1 --port 8002
 - Desarrollo: `ENABLE_FAKE_PAYMENTS=true` (aprobación simulada).
 
 ## 8) Setup rápido en Ubuntu/EC2
+
+### Opción A: Con SQLite (desarrollo)
 ```bash
 git clone https://github.com/IDS-HUGO/DulceMoment_API.git backend-fastapi
 cd backend-fastapi
 bash scripts/setup_ubuntu.sh
 bash scripts/run_api.sh
+```
+
+### Opción B: Con MySQL (producción en EC2)
+
+1. **Instalar MySQL en EC2:**
+```bash
+sudo apt update
+sudo apt install -y mysql-server
+sudo mysql_secure_installation
+# Crear base de datos
+sudo mysql -u root -p << EOF
+CREATE DATABASE dulcemoment_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'dulcemoment'@'localhost' IDENTIFIED BY 'tu_contraseña_segura';
+GRANT ALL PRIVILEGES ON dulcemoment_db.* TO 'dulcemoment'@'localhost';
+FLUSH PRIVILEGES;
+EXIT;
+EOF
+```
+
+2. **Configurar API con MySQL:**
+```bash
+git clone https://github.com/IDS-HUGO/DulceMoment_API.git backend-fastapi
+cd backend-fastapi
+bash scripts/setup_ubuntu.sh
+# Editar .env
+nano .env
+# Descomentar y actualizar DATABASE_URL a:
+# DATABASE_URL=mysql+pymysql://dulcemoment:tu_contraseña_segura@localhost:3306/dulcemoment_db
+bash scripts/run_api.sh
+```
+
+3. **Alternativa: Usar docker-compose** (recomendado para EC2):
+```bash
+# Si tienes docker-compose.yml en el repo
+docker-compose up -d
 ```
 
 Variables opcionales para correr:
