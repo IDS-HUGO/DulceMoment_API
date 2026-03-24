@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session, joinedload
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import settings
@@ -42,7 +42,7 @@ from app.schemas.schemas import (
     UserRead,
 )
 from app.services.auth import hash_password, verify_password
-from app.services.cloudinary_media import is_cloudinary_configured, upload_image_from_url
+from app.services.cloudinary_media import is_cloudinary_configured, upload_image_file, upload_image_from_url
 from app.services.jwt import create_access_token, create_refresh_token, decode_access_token
 from app.services.notifications import send_push_to_tokens, tokens_for_user_ids
 from app.services.payments import create_payment_intent
@@ -612,6 +612,25 @@ def upload_product_image_url(
     _require_store_user(current_user)
     try:
         image_url, public_id = upload_image_from_url(payload.source_url)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail="No se pudo subir imagen a Cloudinary") from error
+
+    return CloudinaryUploadResponse(image_url=image_url, public_id=public_id)
+
+
+@router.post("/media/cloudinary/upload-file", response_model=CloudinaryUploadResponse)
+async def upload_product_image_file(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    _require_store_user(current_user)
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Archivo inválido: debe ser una imagen")
+
+    try:
+        image_url, public_id = upload_image_file(file.file, filename=file.filename, content_type=file.content_type)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:

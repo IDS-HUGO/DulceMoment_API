@@ -39,3 +39,17 @@ def upload_image_from_url(source_url: str) -> tuple[str, str]:
         resource_type="image",
     )
     return response["secure_url"], response["public_id"]
+
+
+def upload_image_file(file_obj, filename: str | None = None, content_type: str | None = None) -> tuple[str, str]:
+    if not is_cloudinary_configured():
+        raise ValueError("Cloudinary no configurado")
+
+    _configure_cloudinary()
+    response = cloudinary.uploader.upload(
+        file_obj,
+        folder=settings.cloudinary_folder,
+        resource_type="image",
+        filename_override=filename,
+    )
+    return response["secure_url"], response["public_id"]
