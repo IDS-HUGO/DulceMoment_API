@@ -31,8 +31,16 @@ echo -e "${YELLOW}[3/5] Configuring environment...${NC}"
 if [ ! -f ".env" ]; then
   cp .env.example .env
   echo -e "${GREEN}✓ Created .env from .env.example${NC}"
+  echo -e "${GREEN}✓ Cloudinary credentials already configured from .env.example${NC}"
 else
   echo -e "${GREEN}✓ .env already exists${NC}"
+  # Verify Cloudinary is configured
+  if ! grep -q "CLOUDINARY_CLOUD_NAME" .env || grep -q "CLOUDINARY_CLOUD_NAME=$" .env; then
+    echo -e "${YELLOW}Warning: Cloudinary not configured in .env${NC}"
+    echo -e "${YELLOW}Please add Cloudinary credentials manually to .env${NC}"
+  else
+    echo -e "${GREEN}✓ Cloudinary is configured${NC}"
+  fi
 fi
 
 # 4. Setup MySQL (if not already done)
@@ -70,3 +78,17 @@ fi
 echo -e "${GREEN}=== Setup completed! ===${NC}"
 echo -e "${YELLOW}To start the API, run:${NC}"
 echo -e "${GREEN}bash scripts/run_api.sh${NC}"
+echo ""
+echo -e "${YELLOW}=== Image Service (Cloudinary) ===${NC}"
+if grep -q "CLOUDINARY_CLOUD_NAME=root" .env; then
+  echo -e "${GREEN}✓ Cloudinary is configured in .env${NC}"
+  echo -e "${YELLOW}  Cloud: $(grep CLOUDINARY_CLOUD_NAME .env | cut -d'=' -f2)${NC}"
+  echo -e "${YELLOW}  API Key: $(grep CLOUDINARY_API_KEY .env | cut -d'=' -f2)${NC}"
+  echo -e "${GREEN}Images can be uploaded via POST /api/v1/media/cloudinary/upload-url${NC}"
+else
+  echo -e "${RED}✗ Cloudinary NOT configured${NC}"
+  echo -e "${YELLOW}Update .env with your Cloudinary credentials:${NC}"
+  echo -e "${YELLOW}  CLOUDINARY_CLOUD_NAME=your_cloud_name${NC}"
+  echo -e "${YELLOW}  CLOUDINARY_API_KEY=your_api_key${NC}"
+  echo -e "${YELLOW}  CLOUDINARY_API_SECRET=your_api_secret${NC}"
+fi

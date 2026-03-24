@@ -52,15 +52,9 @@ router = APIRouter()
 security = HTTPBearer(auto_error=False)
 
 
-def _ensure_single_store_rule(db: Session, role: UserRole):
-    if role != UserRole.store:
-        return
-    store_count = db.query(User).filter(User.role == UserRole.store).count()
-    if store_count >= 1:
-        raise HTTPException(
-            status_code=403,
-            detail="Ya existe un vendedor. Solo se permite un vendedor en la plataforma.",
-        )
+def _get_existing_store(db: Session) -> User | None:
+    """Retorna el vendedor existente si existe."""
+    return db.query(User).filter(User.role == UserRole.store).first()
 
 
 @router.get("/health")
@@ -70,10 +64,17 @@ def health():
 
 @router.post("/users", response_model=UserRead)
 def create_user(payload: UserCreate, db: Session = Depends(get_db)):
+    # Si intenta crear un vendedor y ya existe uno, retorna el existente
+    if payload.role == UserRole.store:
+        existing_store = _get_existing_store(db)
+        if existing_store:
+            return existing_store
+    
+    # Si el email ya existe para otro rol, rechaza
     exists = db.query(User).filter(User.email == payload.email).first()
     if exists:
         raise HTTPException(status_code=400, detail="Email ya registrado")
-    _ensure_single_store_rule(db, payload.role)
+    
     user = User(
         name=payload.name,
         email=payload.email,
@@ -88,10 +89,18 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
 
 @router.post("/auth/register", response_model=AuthResponse)
 def register(payload: UserCreate, db: Session = Depends(get_db)):
+    # Si intenta crear un vendedor y ya existe uno, retorna el existente con tokens nuevos
+    if payload.role == UserRole.store:
+        existing_store = _get_existing_store(db)
+        if existing_store:
+            token = create_access_token(existing_store.id, existing_store.role.value, existing_store.email, existing_store.token_version)
+            refresh_token = create_refresh_token(existing_store.id, existing_store.role.value, existing_store.email, existing_store.token_version)
+            return AuthResponse(user=existing_store, access_token=token, refresh_token=refresh_token)
+    
+    # Si el email ya existe para otro rol, rechaza
     exists = db.query(User).filter(User.email == payload.email).first()
     if exists:
         raise HTTPException(status_code=400, detail="Email ya registrado")
-    _ensure_single_store_rule(db, payload.role)
 
     user = User(
         name=payload.name,
