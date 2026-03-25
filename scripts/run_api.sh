@@ -7,6 +7,16 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_DIR"
 source .venv/bin/activate
 
+if [ -f "s.env" ]; then
+  set -a
+  source "s.env"
+  set +a
+elif [ -f ".env" ]; then
+  set -a
+  source ".env"
+  set +a
+fi
+
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 RELOAD="${RELOAD:-false}"
