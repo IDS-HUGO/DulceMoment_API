@@ -34,9 +34,9 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 Swagger: http://localhost:8000/docs
 
-Para la app Android actual se usa puerto 8002:
+Para la app Android actual se usa puerto 8000:
 ```bash
-uvicorn app.main:app --host 127.0.0.1 --port 8002
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 ## 4) Flujo recomendado (demo)
