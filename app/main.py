@@ -1,5 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.api.routes import router as api_router
@@ -20,6 +22,38 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix=settings.api_v1_prefix)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(_: Request, exc: HTTPException):
+    detail = exc.detail
+    if isinstance(detail, dict):
+        message = detail.get("message") or "No se pudo completar la operación"
+        payload = {"message": message, **detail}
+    else:
+        message = str(detail) if detail else "No se pudo completar la operación"
+        payload = {"message": message}
+    return JSONResponse(status_code=exc.status_code, content=payload)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(_: Request, exc: RequestValidationError):
+    errors = exc.errors()
+    first = errors[0] if errors else {}
+    field = ".".join(str(part) for part in first.get("loc", [])[1:]) if first.get("loc") else "campo"
+    reason = first.get("msg", "valor inválido")
+    return JSONResponse(
+        status_code=422,
+        content={"message": f"Dato inválido en '{field}': {reason}"},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(_: Request, __: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"message": "Ocurrió un error inesperado del servidor. Intenta de nuevo."},
+    )
 
 
 @app.on_event("startup")

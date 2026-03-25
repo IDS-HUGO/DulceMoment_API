@@ -201,3 +201,6 @@ class CardPaymentRequest(BaseModel):
     order_id: int
     card_number: str = Field(min_length=13)
     holder_name: str = Field(min_length=2)
+    security_code: str = Field(min_length=3, max_length=4)
+    expiry_month: int = Field(ge=1, le=12)
+    expiry_year: int = Field(ge=2024, le=2100)

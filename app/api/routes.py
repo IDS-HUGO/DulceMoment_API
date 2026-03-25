@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session, joinedload
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import settings
@@ -45,11 +45,37 @@ from app.services.auth import hash_password, verify_password
 from app.services.cloudinary_media import is_cloudinary_configured, upload_image_file, upload_image_from_url
 from app.services.jwt import create_access_token, create_refresh_token, decode_access_token
 from app.services.notifications import send_push_to_tokens, tokens_for_user_ids
-from app.services.payments import create_payment_intent
+from app.services.payments import (
+    PaymentGatewayError,
+    charge_mercadopago_card,
+    create_mercadopago_card_token,
+    create_payment_intent,
+    get_mercadopago_payment_details,
+)
 from app.services.pricing import calculate_custom_price
 
 router = APIRouter()
 security = HTTPBearer(auto_error=False)
+
+
+def _mp_status_detail_message(status_detail: str | None) -> str:
+    code = (status_detail or "").lower()
+    mapping = {
+        "cc_rejected_bad_filled_card_number": "El número de tarjeta es inválido. Verifícalo e inténtalo de nuevo.",
+        "cc_rejected_bad_filled_date": "La fecha de vencimiento es inválida.",
+        "cc_rejected_bad_filled_security_code": "El código de seguridad (CVV) es inválido.",
+        "cc_rejected_blacklist": "La tarjeta no puede procesarse. Prueba con otro medio de pago.",
+        "cc_rejected_call_for_authorize": "Debes autorizar el pago con tu banco.",
+        "cc_rejected_card_disabled": "La tarjeta está deshabilitada. Contacta a tu banco.",
+        "cc_rejected_duplicated_payment": "Este pago parece duplicado. Revisa tus movimientos antes de reintentar.",
+        "cc_rejected_high_risk": "El pago fue rechazado por validaciones de seguridad. Prueba con otra tarjeta.",
+        "cc_rejected_insufficient_amount": "Fondos insuficientes en la tarjeta.",
+        "cc_rejected_invalid_installments": "La cantidad de cuotas no es válida para esta tarjeta.",
+        "cc_rejected_max_attempts": "Llegaste al máximo de intentos permitidos. Intenta más tarde.",
+        "cc_rejected_other_reason": "El banco rechazó el pago. Prueba con otra tarjeta.",
+        "cc_rejected_bad_filled_other": "Hay datos de la tarjeta incompletos o incorrectos.",
+    }
+    return mapping.get(code, "El pago no pudo procesarse. Verifica los datos e inténtalo nuevamente.")
 
 
 def _get_existing_store(db: Session) -> User | None:
@@ -558,6 +584,7 @@ def confirm_payment(
 @router.post("/payments/card")
 def pay_with_card(
     payload: CardPaymentRequest,
+    payment_provider: str = Header(default="mercadopago", alias="X-Payment-Provider"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -573,15 +600,136 @@ def pay_with_card(
     if len(digits) < 13:
         raise HTTPException(status_code=400, detail="Tarjeta inválida")
 
-    payment.provider_reference = f"card_ending_{digits[-4:]}"
+    provider = (payment_provider or settings.payment_provider or "mercadopago").lower()
+    payment.provider = provider
+    if settings.enable_fake_payments:
+        payment.provider_reference = f"{provider}_card_ending_{digits[-4:]}"
+        payment.status = PaymentStatus.approved
+        db.commit()
+        return {
+            "ok": True,
+            "order_id": payload.order_id,
+            "provider": provider,
+            "card_last4": digits[-4:],
+            "status": payment.status,
+            "mode": "fake",
+        }
+
+    if provider in {"mercadopago", "mercado_pago"}:
+        if not settings.mercadopago_public_key or not settings.mercadopago_access_token:
+            raise HTTPException(status_code=500, detail="El método de pago no está disponible temporalmente")
+
+        try:
+            card_token = create_mercadopago_card_token(
+                public_key=settings.mercadopago_public_key,
+                card_number=digits,
+                security_code=payload.security_code,
+                expiry_month=payload.expiry_month,
+                expiry_year=payload.expiry_year,
+                holder_name=payload.holder_name,
+            )
+            payment_method_id = "visa" if digits.startswith("4") else "master"
+            mp_payment = charge_mercadopago_card(
+                access_token=settings.mercadopago_access_token,
+                amount=payment.amount,
+                order_id=order.id,
+                payer_email=current_user.email,
+                card_token=card_token,
+                payment_method_id=payment_method_id,
+            )
+        except PaymentGatewayError as error:
+            payment.status = PaymentStatus.failed
+            db.commit()
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "message": _mp_status_detail_message(error.status_detail) if error.status_detail else error.user_message,
+                    "status_detail": error.status_detail,
+                    "gateway": "mercadopago",
+                },
+            ) from error
+        except Exception as error:
+            payment.status = PaymentStatus.failed
+            db.commit()
+            raise HTTPException(status_code=402, detail="El pago fue rechazado por la pasarela") from error
+
+        mp_status = (mp_payment.get("status") or "").lower()
+        payment.provider_reference = str(mp_payment.get("id") or f"{provider}_card_ending_{digits[-4:]}")
+        payment.status = PaymentStatus.approved if mp_status == "approved" else PaymentStatus.failed
+        db.commit()
+        return {
+            "ok": payment.status == PaymentStatus.approved,
+            "order_id": payload.order_id,
+            "provider": provider,
+            "payment_id": mp_payment.get("id"),
+            "status": mp_status or payment.status,
+            "status_detail": mp_payment.get("status_detail"),
+            "message": "Pago aprobado correctamente" if payment.status == PaymentStatus.approved else _mp_status_detail_message(mp_payment.get("status_detail")),
+            "card_last4": digits[-4:],
+            "mode": "real",
+        }
+
+    payment.provider_reference = f"{provider}_card_ending_{digits[-4:]}"
     payment.status = PaymentStatus.approved
     db.commit()
     return {
         "ok": True,
         "order_id": payload.order_id,
+        "provider": provider,
         "card_last4": digits[-4:],
         "status": payment.status,
     }
+
+
+@router.get("/payments/{order_id}/diagnostics")
+def payment_diagnostics(
+    order_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+
+    if current_user.role.value == "customer" and order.customer_id != current_user.id:
+        raise HTTPException(status_code=403, detail="No autorizado para ver este diagnóstico")
+
+    payment = db.query(Payment).filter(Payment.order_id == order_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="No hay registro de pago para este pedido")
+
+    diagnostics = {
+        "order_id": order_id,
+        "provider": payment.provider,
+        "payment_status": payment.status,
+        "provider_reference": payment.provider_reference,
+        "amount": payment.amount,
+    }
+
+    if payment.provider in {"mercadopago", "mercado_pago"} and payment.provider_reference and payment.provider_reference.isdigit():
+        if not settings.mercadopago_access_token:
+            diagnostics["gateway_message"] = "No hay credenciales para consultar diagnóstico extendido"
+            return diagnostics
+
+        try:
+            mp_detail = get_mercadopago_payment_details(
+                access_token=settings.mercadopago_access_token,
+                payment_id=payment.provider_reference,
+            )
+            diagnostics["gateway"] = {
+                "status": mp_detail.get("status"),
+                "status_detail": mp_detail.get("status_detail"),
+                "payment_method_id": (mp_detail.get("payment_method") or {}).get("id"),
+                "payment_type_id": mp_detail.get("payment_type_id"),
+                "issuer_id": (mp_detail.get("issuer") or {}).get("id"),
+                "first_six_digits": ((mp_detail.get("card") or {}).get("first_six_digits")),
+                "last_four_digits": ((mp_detail.get("card") or {}).get("last_four_digits")),
+                "date_created": mp_detail.get("date_created"),
+            }
+        except PaymentGatewayError as error:
+            diagnostics["gateway_message"] = error.user_message
+
+    return diagnostics
 
 
 @router.post("/devices/token")

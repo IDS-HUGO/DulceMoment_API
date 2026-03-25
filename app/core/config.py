@@ -8,6 +8,11 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     stripe_secret_key: str = ""
     stripe_currency: str = "mxn"
+    payment_provider: str = "mercadopago"
+    mercadopago_public_key: str = ""
+    mercadopago_access_token: str = ""
+    mercadopago_client_id: str = ""
+    mercadopago_client_secret: str = ""
     enable_fake_payments: bool = True
     firebase_service_account_path: str = ""
     jwt_secret_key: str = "dulcemoment-change-this-secret"
