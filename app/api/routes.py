@@ -40,6 +40,8 @@ from app.schemas.schemas import (
     UpdateOrderStatus,
     UserCreate,
     UserRead,
+    UserUpdate,
+    StorePublicProfile,
 )
 from app.services.auth import hash_password, verify_password
 from app.services.cloudinary_media import (
@@ -255,6 +257,30 @@ def auth_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 
+@router.patch("/auth/me", response_model=UserRead)
+def auth_update_me(
+    payload: UserUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        return current_user
+
+    new_email = changes.get("email")
+    if new_email and new_email != current_user.email:
+        existing = db.query(User).filter(User.email == new_email).first()
+        if existing and existing.id != current_user.id:
+            raise HTTPException(status_code=400, detail="Email ya registrado")
+
+    for key, value in changes.items():
+        setattr(current_user, key, value)
+
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+
 @router.post("/auth/logout")
 def logout(
     payload: LogoutRequest,
@@ -334,7 +360,39 @@ def list_products(only_active: bool = Query(default=True), db: Session = Depends
     query = db.query(Product).options(joinedload(Product.options))
     if only_active:
         query = query.filter(Product.is_active == True)
-    return query.order_by(Product.id.desc()).all()
+    products = query.order_by(Product.id.desc()).all()
+    store_user = _get_existing_store(db)
+    seller_name = store_user.name if store_user else "DulceMoment"
+    seller_email = store_user.email if store_user else ""
+
+    return [
+        ProductRead(
+            id=product.id,
+            name=product.name,
+            description=product.description,
+            base_price=product.base_price,
+            stock=product.stock,
+            is_active=product.is_active,
+            image_url=product.image_url,
+            seller_name=seller_name,
+            seller_email=seller_email,
+            options=product.options,
+        )
+        for product in products
+    ]
+
+
+@router.get("/store/public-profile", response_model=StorePublicProfile)
+def store_public_profile(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role.value not in {"customer", "store"}:
+        raise HTTPException(status_code=403, detail="No autorizado")
+    store_user = _get_existing_store(db)
+    if not store_user:
+        raise HTTPException(status_code=404, detail="Vendedor no encontrado")
+    return StorePublicProfile(id=store_user.id, name=store_user.name, email=store_user.email)
 
 
 @router.post("/products/{product_id}/options", response_model=ProductRead)
@@ -371,6 +429,22 @@ def create_order(payload: OrderCreate, db: Session = Depends(get_db), current_us
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
     if customer.role.value != "customer":
         raise HTTPException(status_code=400, detail="Solo clientes pueden crear pedidos")
+
+    previous_unapproved_order = (
+        db.query(Order)
+        .join(Payment, Payment.order_id == Order.id)
+        .filter(
+            Order.customer_id == current_user.id,
+            Payment.status != PaymentStatus.approved,
+        )
+        .order_by(Order.id.desc())
+        .first()
+    )
+    if previous_unapproved_order:
+        raise HTTPException(
+            status_code=409,
+            detail=f"No puedes crear un nuevo pedido hasta aprobar/pagar el pedido #{previous_unapproved_order.id}",
+        )
 
     order = Order(
         customer_id=payload.customer_id,

@@ -28,6 +28,17 @@ class UserRead(BaseModel):
         from_attributes = True
 
 
+class UserUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=120)
+    email: str | None = None
+
+
+class StorePublicProfile(BaseModel):
+    id: int
+    name: str
+    email: str
+
+
 class AuthResponse(BaseModel):
     user: UserRead
     access_token: str
@@ -87,6 +98,8 @@ class ProductRead(BaseModel):
     stock: int
     is_active: bool
     image_url: str
+    seller_name: str = ""
+    seller_email: str = ""
     options: list[ProductOptionRead] = []
 
     class Config:
