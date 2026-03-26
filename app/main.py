@@ -2,6 +2,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from sqlalchemy import text
 
 from app.api.routes import router as api_router
@@ -10,6 +12,11 @@ from app.db.database import Base, SessionLocal, engine
 from app.db.seed import seed_data
 
 app = FastAPI(title=settings.app_name)
+
+media_root = Path(__file__).resolve().parents[1] / "media"
+uploads_root = media_root / "uploads"
+uploads_root.mkdir(parents=True, exist_ok=True)
+app.mount("/media", StaticFiles(directory=media_root), name="media")
 
 allow_all_origins = settings.cors_allow_all
 

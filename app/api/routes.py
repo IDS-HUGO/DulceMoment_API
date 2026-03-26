@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session, joinedload
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import settings
@@ -42,7 +42,13 @@ from app.schemas.schemas import (
     UserRead,
 )
 from app.services.auth import hash_password, verify_password
-from app.services.cloudinary_media import is_cloudinary_configured, upload_image_file, upload_image_from_url
+from app.services.cloudinary_media import (
+    is_cloudinary_configured,
+    normalize_external_image_url,
+    save_local_image_file,
+    upload_image_file,
+    upload_image_from_url,
+)
 from app.services.jwt import create_access_token, create_refresh_token, decode_access_token
 from app.services.notifications import send_push_to_tokens, tokens_for_user_ids
 from app.services.payments import (
@@ -758,18 +764,27 @@ def upload_product_image_url(
     current_user: User = Depends(get_current_user),
 ):
     _require_store_user(current_user)
+
+    normalized_url = normalize_external_image_url(payload.source_url)
+
+    if not is_cloudinary_configured():
+        public_id = f"external_{int(datetime.now(tz=timezone.utc).timestamp())}"
+        return CloudinaryUploadResponse(image_url=normalized_url, public_id=public_id)
+
     try:
-        image_url, public_id = upload_image_from_url(payload.source_url)
+        image_url, public_id = upload_image_from_url(normalized_url)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
-        raise HTTPException(status_code=502, detail="No se pudo subir imagen a Cloudinary") from error
+        public_id = f"external_{int(datetime.now(tz=timezone.utc).timestamp())}"
+        return CloudinaryUploadResponse(image_url=normalized_url, public_id=public_id)
 
     return CloudinaryUploadResponse(image_url=image_url, public_id=public_id)
 
 
 @router.post("/media/cloudinary/upload-file", response_model=CloudinaryUploadResponse)
 async def upload_product_image_file(
+    request: Request,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
 ):
@@ -777,12 +792,33 @@ async def upload_product_image_file(
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Archivo inválido: debe ser una imagen")
 
-    try:
-        image_url, public_id = upload_image_file(file.file, filename=file.filename, content_type=file.content_type)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    except Exception as error:
-        raise HTTPException(status_code=502, detail="No se pudo subir imagen a Cloudinary") from error
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+
+    cloudinary_error: str | None = None
+    image_url: str | None = None
+    public_id: str | None = None
+
+    if is_cloudinary_configured():
+        try:
+            image_url, public_id = upload_image_file(file_bytes, filename=file.filename, content_type=file.content_type)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except Exception as error:
+            cloudinary_error = str(error)
+
+    if image_url is None or public_id is None:
+        try:
+            local_path, public_id = save_local_image_file(file_bytes, filename=file.filename)
+            image_url = str(request.base_url).rstrip("/") + local_path
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except Exception as error:
+            detail = "No se pudo almacenar la imagen"
+            if cloudinary_error:
+                detail = f"Cloudinary falló y tampoco se pudo guardar localmente: {cloudinary_error}"
+            raise HTTPException(status_code=502, detail=detail) from error
 
     return CloudinaryUploadResponse(image_url=image_url, public_id=public_id)
 
@@ -790,4 +826,8 @@ async def upload_product_image_file(
 @router.get("/media/cloudinary/status")
 def cloudinary_status(current_user: User = Depends(get_current_user)):
     _require_store_user(current_user)
-    return {"configured": is_cloudinary_configured()}
+    configured = is_cloudinary_configured()
+    return {
+        "configured": configured,
+        "mode": "cloudinary" if configured else "local_fallback",
+    }
