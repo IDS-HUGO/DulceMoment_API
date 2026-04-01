@@ -1,3 +1,150 @@
+@router.post("/payments/{order_id}/confirm-user")
+def confirm_user_payment(order_id: int, code: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # Simulación: el código debe ser "123456" para aprobar
+    payment = db.query(Payment).filter(Payment.order_id == order_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Pago no encontrado")
+    if payment.status != PaymentStatus.pending:
+        raise HTTPException(status_code=400, detail="El pago ya fue procesado")
+    if code != "123456":
+        raise HTTPException(status_code=401, detail="Código de confirmación inválido")
+    payment.status = PaymentStatus.approved
+    order = db.query(Order).filter(Order.id == order_id).first()
+    order.status = OrderStatus.created
+    db.add(OrderTrackingEvent(
+        order_id=order.id,
+        status=OrderStatus.created,
+        message="Pedido confirmado tras doble validación",
+        eta_minutes=90,
+    ))
+    db.commit()
+    return {"ok": True, "order_id": order_id, "payment_status": payment.status}
+@router.get("/dashboard/sales")
+def sales_dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.role.value != "store":
+        raise HTTPException(status_code=403, detail="Solo el vendedor puede ver el dashboard")
+    from sqlalchemy import func
+    total_orders = db.query(Order).filter(Order.status == OrderStatus.created).count()
+    total_sales = db.query(func.sum(Payment.amount)).join(Order).filter(Order.status == OrderStatus.created, Payment.status == PaymentStatus.approved).scalar() or 0.0
+    total_customers = db.query(Order.customer_id).distinct().count()
+    last_7_days = datetime.utcnow() - timedelta(days=7)
+    sales_last_7 = db.query(func.sum(Payment.amount)).join(Order).filter(Order.status == OrderStatus.created, Payment.status == PaymentStatus.approved, Order.created_at >= last_7_days).scalar() or 0.0
+    return {
+        "total_orders": total_orders,
+        "total_sales": total_sales,
+        "total_customers": total_customers,
+        "sales_last_7_days": sales_last_7,
+    }
+@router.get("/payments/history")
+def payment_history(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # Historial de pagos del usuario
+    orders = db.query(Order).filter(Order.customer_id == current_user.id).all()
+    payment_list = []
+    for order in orders:
+        if order.payment:
+            payment_list.append({
+                "order_id": order.id,
+                "amount": order.payment.amount,
+                "status": order.payment.status.value,
+                "provider": order.payment.provider,
+                "reference": order.payment.provider_reference,
+                "created_at": order.payment.created_at,
+            })
+    return payment_list
+@router.post("/orders/{order_id}/reactivate", response_model=OrderRead)
+def reactivate_order(order_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+    if order.customer_id != current_user.id:
+        raise HTTPException(status_code=403, detail="No autorizado para reactivar este pedido")
+    if order.status not in [OrderStatus.draft, OrderStatus.cancelled]:
+        raise HTTPException(status_code=400, detail="Solo puedes reactivar pedidos en borrador o cancelados")
+    order.status = OrderStatus.draft
+    db.add(OrderTrackingEvent(
+        order_id=order.id,
+        status=OrderStatus.draft,
+        message="Pedido reactivado, pendiente de pago",
+        eta_minutes=0,
+    ))
+    db.commit()
+    order = (
+        db.query(Order)
+        .options(joinedload(Order.items), joinedload(Order.events), joinedload(Order.payment))
+        .filter(Order.id == order.id)
+        .first()
+    )
+    return order
+from datetime import timedelta
+@router.delete("/orders/cleanup-drafts")
+def cleanup_old_drafts(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.role.value != "customer":
+        raise HTTPException(status_code=403, detail="Solo clientes pueden limpiar borradores")
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+    drafts = db.query(Order).filter(
+        Order.customer_id == current_user.id,
+        Order.status == OrderStatus.draft,
+        Order.created_at < cutoff
+    ).all()
+    count = 0
+    for draft in drafts:
+        db.delete(draft)
+        count += 1
+    db.commit()
+    return {"deleted": count}
+@router.get("/orders/my", response_model=list[OrderRead])
+def my_orders(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # Devuelve todos los pedidos del usuario, sin filtrar por estado
+    orders = (
+        db.query(Order)
+        .options(joinedload(Order.items), joinedload(Order.events), joinedload(Order.payment))
+        .filter(Order.customer_id == current_user.id)
+        .order_by(Order.id.desc())
+        .all()
+    )
+    for order in orders:
+        order.events.sort(key=lambda event: event.created_at)
+    return orders
+@router.get("/orders/{order_id}/totals")
+def order_totals(order_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+    if current_user.role.value == "customer" and order.customer_id != current_user.id:
+        raise HTTPException(status_code=403, detail="No autorizado para este pedido")
+    subtotal = sum(item.quantity * item.unit_price for item in order.items)
+    iva = round(subtotal * 0.05, 2)
+    total = round(subtotal + iva, 2)
+    return {
+        "order_id": order.id,
+        "subtotal": subtotal,
+        "iva": iva,
+        "total": total,
+    }
+@router.post("/orders/{order_id}/cancel", response_model=OrderRead)
+def cancel_order(order_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+    if order.customer_id != current_user.id:
+        raise HTTPException(status_code=403, detail="No autorizado para cancelar este pedido")
+    if order.status != OrderStatus.draft:
+        raise HTTPException(status_code=400, detail="Solo puedes cancelar pedidos en borrador")
+    order.status = OrderStatus.cancelled
+    db.add(OrderTrackingEvent(
+        order_id=order.id,
+        status=OrderStatus.cancelled,
+        message="Pedido cancelado por el usuario antes de pagar",
+        eta_minutes=0,
+    ))
+    db.commit()
+    order = (
+        db.query(Order)
+        .options(joinedload(Order.items), joinedload(Order.events), joinedload(Order.payment))
+        .filter(Order.id == order.id)
+        .first()
+    )
+    return order
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session, joinedload
@@ -450,13 +597,13 @@ def create_order(payload: OrderCreate, db: Session = Depends(get_db), current_us
         customer_id=payload.customer_id,
         delivery_address=payload.delivery_address,
         notes=payload.notes,
-        status=OrderStatus.created,
+        status=OrderStatus.draft,  # Borrador hasta que se pague
         total=0,
     )
     db.add(order)
     db.flush()
 
-    total = 0.0
+    subtotal = 0.0
 
     for item_payload in payload.items:
         product = db.query(Product).filter(Product.id == item_payload.product_id).first()
@@ -505,20 +652,23 @@ def create_order(payload: OrderCreate, db: Session = Depends(get_db), current_us
         db.add(item)
 
         product.stock -= item_payload.quantity
-        total += item.quantity * item.unit_price
+        subtotal += item.quantity * item.unit_price
 
-    order.total = round(total, 2)
+    # Descuento por cupón (si existe)
+    discount = 0.0
+    coupon_code = getattr(payload, "coupon_code", None)
+    if coupon_code:
+        # Ejemplo: cupón "DESCUENTO10" da 10% de descuento
+        if coupon_code.upper() == "DESCUENTO10":
+            discount = round(subtotal * 0.10, 2)
+        # Aquí puedes agregar más lógica de cupones
+    subtotal_after_discount = subtotal - discount
+    iva = round(subtotal_after_discount * 0.05, 2)
+    total = round(subtotal_after_discount + iva, 2)
+    order.total = total
 
     payment = Payment(order_id=order.id, amount=order.total, status=PaymentStatus.pending)
     db.add(payment)
-
-    initial_event = OrderTrackingEvent(
-        order_id=order.id,
-        status=OrderStatus.created,
-        message="Pedido creado y confirmado",
-        eta_minutes=90,
-    )
-    db.add(initial_event)
 
     db.commit()
 
@@ -556,6 +706,9 @@ def list_orders(
     query = db.query(Order).options(joinedload(Order.items), joinedload(Order.events), joinedload(Order.payment))
     if current_user.role.value == "customer":
         query = query.filter(Order.customer_id == current_user.id)
+    elif current_user.role.value == "store":
+        # Solo mostrar pedidos confirmados y pagados
+        query = query.join(Payment).filter(Order.status == OrderStatus.created, Payment.status == PaymentStatus.approved)
     elif customer_id:
         query = query.filter(Order.customer_id == customer_id)
     orders = query.all()
@@ -586,20 +739,37 @@ def update_order_status(
         longitude=payload.longitude,
     )
     db.add(event)
+    # Auditoría
+    try:
+        with open("audit.log", "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.utcnow().isoformat()}] Pedido {order.id} cambiado a {payload.status.value} por usuario {current_user.id}\n")
+    except Exception:
+        pass
     db.commit()
 
+    # Notificación push/email
     message_map = {
         OrderStatus.in_oven: "Tu pastel entró al horno",
         OrderStatus.decorating: "Estamos decorando tu pastel",
         OrderStatus.on_the_way: "¡Tu pedido va en camino!",
         OrderStatus.delivered: "Entregado",
         OrderStatus.created: "Pedido confirmado",
+        OrderStatus.cancelled: "Pedido cancelado",
     }
     title = "Actualización de pedido"
     body = message_map.get(payload.status, payload.message)
 
     tokens = tokens_for_user_ids(db, [order.customer_id])
     send_push_to_tokens(tokens, title=title, body=body, data={"order_id": str(order.id), "status": payload.status.value})
+
+    # Enviar email (si hay email del usuario)
+    try:
+        from app.services.notifications import send_email
+        user = db.query(User).filter(User.id == order.customer_id).first()
+        if user and user.email:
+            send_email(user.email, subject=title, body=body)
+    except Exception:
+        pass
 
     refreshed = (
         db.query(Order)
@@ -685,6 +855,14 @@ def pay_with_card(
     if settings.enable_fake_payments:
         payment.provider_reference = f"{provider}_card_ending_{digits[-4:]}"
         payment.status = PaymentStatus.approved
+        # Confirmar pedido tras pago exitoso
+        order.status = OrderStatus.created
+        db.add(OrderTrackingEvent(
+            order_id=order.id,
+            status=OrderStatus.created,
+            message="Pedido creado y confirmado",
+            eta_minutes=90,
+        ))
         db.commit()
         return {
             "ok": True,
@@ -736,6 +914,14 @@ def pay_with_card(
         mp_status = (mp_payment.get("status") or "").lower()
         payment.provider_reference = str(mp_payment.get("id") or f"{provider}_card_ending_{digits[-4:]}")
         payment.status = PaymentStatus.approved if mp_status == "approved" else PaymentStatus.failed
+        if payment.status == PaymentStatus.approved:
+            order.status = OrderStatus.created
+            db.add(OrderTrackingEvent(
+                order_id=order.id,
+                status=OrderStatus.created,
+                message="Pedido creado y confirmado",
+                eta_minutes=90,
+            ))
         db.commit()
         return {
             "ok": payment.status == PaymentStatus.approved,
@@ -751,6 +937,13 @@ def pay_with_card(
 
     payment.provider_reference = f"{provider}_card_ending_{digits[-4:]}"
     payment.status = PaymentStatus.approved
+    order.status = OrderStatus.created
+    db.add(OrderTrackingEvent(
+        order_id=order.id,
+        status=OrderStatus.created,
+        message="Pedido creado y confirmado",
+        eta_minutes=90,
+    ))
     db.commit()
     return {
         "ok": True,

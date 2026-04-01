@@ -13,11 +13,13 @@ class UserRole(str, enum.Enum):
 
 
 class OrderStatus(str, enum.Enum):
-    created = "created"
+    draft = "draft"         # Pedido en borrador, aún no pagado
+    created = "created"     # Pedido confirmado tras pago
     in_oven = "in_oven"
     decorating = "decorating"
     on_the_way = "on_the_way"
     delivered = "delivered"
+    cancelled = "cancelled" # Pedido cancelado antes de pagar
 
 
 class PaymentStatus(str, enum.Enum):
