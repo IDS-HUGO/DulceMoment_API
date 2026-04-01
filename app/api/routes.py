@@ -1,6 +1,66 @@
 
+
 from fastapi import APIRouter, Depends, HTTPException, File, Header, Query, Request, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from app.core.config import settings
+from app.db.database import get_db
+from app.db.models import (
+    DeviceToken,
+    Order,
+    OrderItem,
+    OrderStatus,
+    OrderTrackingEvent,
+    Payment,
+    PaymentStatus,
+    Product,
+    ProductOption,
+    RevokedToken,
+    User,
+    UserRole,
+)
+from app.schemas.schemas import (
+    AuthResponse,
+    CardPaymentRequest,
+    CloudinaryUploadRequest,
+    CloudinaryUploadResponse,
+    CreatePaymentIntentRequest,
+    CreatePaymentIntentResponse,
+    DeviceTokenCreate,
+    LoginRequest,
+    LogoutRequest,
+    RefreshTokenRequest,
+    OrderCreate,
+    OrderRead,
+    ProductCreate,
+    ProductOptionCreate,
+    ProductRead,
+    ProductUpdate,
+    UpdateOrderStatus,
+    UserCreate,
+    UserRead,
+    UserUpdate,
+    StorePublicProfile,
+)
+from app.services.auth import hash_password, verify_password
+from app.services.cloudinary_media import (
+    is_cloudinary_configured,
+    normalize_external_image_url,
+    save_local_image_file,
+    upload_image_file,
+    upload_image_from_url,
+)
+from app.services.jwt import create_access_token, create_refresh_token, decode_access_token
+from app.services.notifications import send_push_to_tokens, tokens_for_user_ids
+from app.services.payments import (
+    PaymentGatewayError,
+    charge_mercadopago_card,
+    create_mercadopago_card_token,
+    create_payment_intent,
+    get_mercadopago_payment_details,
+)
+from app.services.pricing import calculate_custom_price
+from datetime import datetime, timezone, timedelta
+from sqlalchemy.orm import Session, joinedload
 router = APIRouter()
 
 @router.post("/payments/{order_id}/confirm-user")
