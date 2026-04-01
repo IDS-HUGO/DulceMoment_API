@@ -1,3 +1,6 @@
+from fastapi import APIRouter
+router = APIRouter()
+
 @router.post("/payments/{order_id}/confirm-user")
 def confirm_user_payment(order_id: int, code: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     # Simulación: el código debe ser "123456" para aprobar
