@@ -1,3 +1,37 @@
+security = HTTPBearer(auto_error=False)
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+) -> User:
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Token requerido")
+
+    try:
+        payload = decode_access_token(credentials.credentials)
+    except ValueError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
+    user_id = int(payload.get("sub", "0"))
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuario inválido")
+    if payload.get("token_type") != "access":
+        raise HTTPException(status_code=401, detail="Access token inválido")
+    if _is_token_revoked(db, payload.get("jti")):
+        raise HTTPException(status_code=401, detail="Token revocado")
+    if int(payload.get("tv", -1)) != user.token_version:
+        raise HTTPException(status_code=401, detail="Sesión expirada, vuelve a iniciar sesión")
+    return user
+
+def _require_store_user(current_user: User) -> User:
+    if current_user.role.value != "store":
+        raise HTTPException(status_code=403, detail="Acceso solo para tienda")
+    return current_user
+
+def _require_customer_user(current_user: User) -> User:
+    if current_user.role.value != "customer":
+        raise HTTPException(status_code=403, detail="Acceso solo para cliente")
+    return current_user
 
 
 from fastapi import APIRouter, Depends, HTTPException, File, Header, Query, Request, UploadFile
