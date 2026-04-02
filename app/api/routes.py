@@ -51,8 +51,9 @@ from app.services.jwt import create_access_token, create_refresh_token, decode_a
 from app.services.notifications import send_push_to_tokens, tokens_for_user_ids
 from app.services.payments import (
     PaymentGatewayError,
-    charge_stripe_card_with_split,
+    charge_stripe_payment_method,
     create_payment_intent,
+    create_payment_method_from_card,
 )
 from app.services.pricing import calculate_custom_price
 from datetime import datetime, timezone, timedelta
@@ -918,6 +919,37 @@ def confirm_payment(
     return {"order_id": order_id, "payment_status": payment.status}
 
 
+@router.post("/payments/create-payment-method", response_model=CreatePaymentMethodResponse)
+def create_payment_method(
+    payload: CreatePaymentMethodRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_customer_user(current_user)
+    
+    digits = "".join(char for char in payload.card_number if char.isdigit())
+    if len(digits) < 13:
+        raise HTTPException(status_code=400, detail="Numero de tarjeta invalido")
+    
+    try:
+        payment_method_id = create_payment_method_from_card(
+            card_number=digits,
+            expiry_month=payload.expiry_month,
+            expiry_year=payload.expiry_year,
+            security_code=payload.security_code,
+            holder_name=payload.holder_name,
+        )
+        return CreatePaymentMethodResponse(
+            payment_method_id=payment_method_id,
+            last4=digits[-4:],
+        )
+    except PaymentGatewayError as error:
+        raise HTTPException(status_code=402, detail=error.user_message) from error
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Error al crear metodo de pago") from error
+
+
+
 @router.post("/payments/card")
 def pay_with_card(
     payload: CardPaymentRequest,
@@ -933,14 +965,11 @@ def pay_with_card(
     if not payment:
         raise HTTPException(status_code=404, detail="Pago no encontrado")
 
-    digits = "".join(char for char in payload.card_number if char.isdigit())
-    if len(digits) < 13:
-        raise HTTPException(status_code=400, detail="Tarjeta inválida")
-
     provider = (payment_provider or settings.payment_provider or "stripe").lower()
     payment.provider = provider
+
     if settings.enable_fake_payments:
-        payment.provider_reference = f"{provider}_card_ending_{digits[-4:]}"
+        payment.provider_reference = f"{provider}_pm_{payload.payment_method_id[-4:]}"
         payment.status = PaymentStatus.approved
         _finalize_approved_payment(db, order, payment, "Pago recibido. Pedido confirmado.")
         db.commit()
@@ -948,27 +977,23 @@ def pay_with_card(
             "ok": True,
             "order_id": payload.order_id,
             "provider": provider,
-            "card_last4": digits[-4:],
-            "status": payment.status,
+            "payment_method_id": payload.payment_method_id,
+            "status": payment.status.value,
             "mode": "fake",
         }
 
     if provider == "stripe":
         if not settings.stripe_secret_key:
-            raise HTTPException(status_code=500, detail="Stripe no está configurado")
+            raise HTTPException(status_code=500, detail="Stripe no esta configurado")
         if not settings.stripe_connected_account_id:
-            raise HTTPException(status_code=500, detail="No se configuró la cuenta Stripe del vendedor")
+            raise HTTPException(status_code=500, detail="No se configuro la cuenta Stripe del vendedor")
 
         try:
-            stripe_result = charge_stripe_card_with_split(
+            stripe_result = charge_stripe_payment_method(
                 amount=payment.amount,
                 order_id=order.id,
                 payer_email=current_user.email,
-                card_number=digits,
-                security_code=payload.security_code,
-                expiry_month=payload.expiry_month,
-                expiry_year=payload.expiry_year,
-                holder_name=payload.holder_name,
+                payment_method_id=payload.payment_method_id,
                 connected_account_id=settings.stripe_connected_account_id,
                 platform_fee_percent=settings.platform_fee_percent,
             )
@@ -983,8 +1008,8 @@ def pay_with_card(
 
         paid = bool(stripe_result.get("paid"))
         status = (stripe_result.get("status") or "").lower()
-        payment.provider_reference = str(stripe_result.get("id") or f"stripe_card_ending_{digits[-4:]}")
-        payment.status = PaymentStatus.approved if paid and status in {"succeeded"} else PaymentStatus.failed
+        payment.provider_reference = str(stripe_result.get("id") or f"stripe_pm_{payload.payment_method_id[-4:]}")
+        payment.status = PaymentStatus.approved if paid else PaymentStatus.failed
         if payment.status == PaymentStatus.approved:
             _finalize_approved_payment(db, order, payment, "Pago recibido por Stripe. Pedido confirmado.")
         db.commit()
@@ -997,26 +1022,14 @@ def pay_with_card(
             "order_id": payload.order_id,
             "provider": provider,
             "payment_id": stripe_result.get("id"),
-            "status": status or payment.status,
+            "status": status or payment.status.value,
             "message": "Pago aprobado correctamente" if payment.status == PaymentStatus.approved else "Pago rechazado",
-            "card_last4": digits[-4:],
+            "amount": amount_cents / 100.0,
             "platform_fee_amount": round(fee_cents / 100.0, 2),
             "seller_amount": round(seller_cents / 100.0, 2),
             "platform_fee_percent": settings.platform_fee_percent,
             "mode": "real",
         }
-
-    payment.provider_reference = f"{provider}_card_ending_{digits[-4:]}"
-    payment.status = PaymentStatus.approved
-    _finalize_approved_payment(db, order, payment, "Pago recibido. Pedido confirmado.")
-    db.commit()
-    return {
-        "ok": True,
-        "order_id": payload.order_id,
-        "provider": provider,
-        "card_last4": digits[-4:],
-        "status": payment.status,
-    }
 
 
 @router.get("/payments/{order_id}/diagnostics")

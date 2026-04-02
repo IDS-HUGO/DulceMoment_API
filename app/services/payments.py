@@ -32,6 +32,34 @@ def create_payment_intent(amount: float, metadata: dict[str, str]) -> tuple[str,
     return intent.id, intent.client_secret
 
 
+def create_payment_intent_with_token(payment_method_id: str, amount: float, metadata: dict[str, str]) -> tuple[str, str]:
+    """
+    Crea un PaymentIntent en Stripe utilizando un token de método de pago.
+    """
+    amount_cents = int(amount * 100)
+
+    if settings.enable_fake_payments or not settings.stripe_secret_key:
+        reference = f"fake_{uuid.uuid4()}"
+        client_secret = f"fake_secret_{uuid.uuid4()}"
+        return reference, client_secret
+
+    try:
+        intent = stripe.PaymentIntent.create(
+            amount=amount_cents,
+            currency=settings.stripe_currency,
+            payment_method=payment_method_id,
+            confirm=True,
+            metadata=metadata,
+        )
+        return intent.id, intent.client_secret
+    except stripe.error.CardError as e:
+        raise PaymentGatewayError(
+            user_message="El pago no pudo procesarse. Revisa la tarjeta e inténtalo de nuevo.",
+            status_detail=str(e),
+            gateway_payload=e.error,
+        )
+
+
 def _guess_payment_method_id(card_number: str) -> str:
     digits = "".join(char for char in card_number if char.isdigit())
     if digits.startswith("4"):
@@ -45,19 +73,57 @@ def _guess_payment_method_id(card_number: str) -> str:
     return "visa"
 
 
-def charge_stripe_card_with_split(
+def create_payment_method_from_card(
+    card_number: str,
+    expiry_month: int,
+    expiry_year: int,
+    security_code: str,
+    holder_name: str,
+) -> str:
+    """
+    Crea un Payment Method en Stripe usando datos de tarjeta.
+    Retorna el ID del Payment Method.
+    """
+    if not settings.stripe_secret_key:
+        raise PaymentGatewayError("Pagos con Stripe no configurados")
+
+    try:
+        payment_method = stripe.PaymentMethod.create(
+            type="card",
+            card={
+                "number": card_number,
+                "exp_month": expiry_month,
+                "exp_year": expiry_year,
+                "cvc": security_code,
+            },
+            billing_details={
+                "name": holder_name,
+            },
+        )
+        return payment_method.id
+    except stripe.error.CardError as e:
+        raise PaymentGatewayError(
+            user_message="El pago no pudo procesarse. Revisa la tarjeta e inténtalo de nuevo.",
+            status_detail=str(e),
+            gateway_payload=e.error,
+        )
+    except stripe.error.StripeError as error:
+        message = getattr(error, "user_message", None) or str(error)
+        raise PaymentGatewayError(f"Error al procesar tarjeta: {message}") from error
+
+
+def charge_stripe_payment_method(
     *,
     amount: float,
     order_id: int,
     payer_email: str,
-    card_number: str,
-    security_code: str,
-    expiry_month: int,
-    expiry_year: int,
-    holder_name: str,
+    payment_method_id: str,
     connected_account_id: str,
     platform_fee_percent: float,
 ) -> dict:
+    """
+    Realiza un cargo en Stripe usando un Payment Method existente.
+    """
     if not settings.stripe_secret_key:
         raise PaymentGatewayError("Pagos con Stripe no configurados")
     if not connected_account_id:
@@ -68,20 +134,12 @@ def charge_stripe_card_with_split(
     fee_cents = max(0, min(fee_cents, amount_cents))
 
     try:
-        token = stripe.Token.create(
-            card={
-                "number": card_number,
-                "exp_month": expiry_month,
-                "exp_year": expiry_year,
-                "cvc": security_code,
-                "name": holder_name,
-            }
-        )
-
-        charge = stripe.Charge.create(
+        intent = stripe.PaymentIntent.create(
             amount=amount_cents,
             currency=settings.stripe_currency,
-            source=token.id,
+            payment_method=payment_method_id,
+            confirm=True,
+            payment_user_agent="DulceMoment/1.0",
             description=f"DulceMoment pedido #{order_id}",
             receipt_email=payer_email,
             application_fee_amount=fee_cents,
@@ -91,14 +149,20 @@ def charge_stripe_card_with_split(
                 "platform_fee_percent": str(platform_fee_percent),
             },
         )
+    except stripe.error.CardError as e:
+        raise PaymentGatewayError(
+            user_message="El pago no pudo procesarse. Revisa la tarjeta e inténtalo de nuevo.",
+            status_detail=str(e),
+            gateway_payload=e.error,
+        )
     except stripe.error.StripeError as error:
         message = getattr(error, "user_message", None) or str(error)
         raise PaymentGatewayError(f"Pago rechazado: {message}") from error
 
     return {
-        "id": charge.get("id"),
-        "status": charge.get("status"),
-        "paid": bool(charge.get("paid")),
+        "id": intent.get("id"),
+        "status": intent.get("status"),
+        "paid": intent.get("status") == "succeeded",
         "amount": amount_cents,
         "application_fee_amount": fee_cents,
         "destination": connected_account_id,
