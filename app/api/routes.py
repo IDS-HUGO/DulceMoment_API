@@ -51,11 +51,8 @@ from app.services.jwt import create_access_token, create_refresh_token, decode_a
 from app.services.notifications import send_push_to_tokens, tokens_for_user_ids
 from app.services.payments import (
     PaymentGatewayError,
-    charge_mercadopago_card,
     charge_stripe_card_with_split,
-    create_mercadopago_card_token,
     create_payment_intent,
-    get_mercadopago_payment_details,
 )
 from app.services.pricing import calculate_custom_price
 from datetime import datetime, timezone, timedelta
@@ -1189,29 +1186,6 @@ def payment_diagnostics(
         "provider_reference": payment.provider_reference,
         "amount": payment.amount,
     }
-
-    if payment.provider in {"mercadopago", "mercado_pago"} and payment.provider_reference and payment.provider_reference.isdigit():
-        if not settings.mercadopago_access_token:
-            diagnostics["gateway_message"] = "No hay credenciales para consultar diagnóstico extendido"
-            return diagnostics
-
-        try:
-            mp_detail = get_mercadopago_payment_details(
-                access_token=settings.mercadopago_access_token,
-                payment_id=payment.provider_reference,
-            )
-            diagnostics["gateway"] = {
-                "status": mp_detail.get("status"),
-                "status_detail": mp_detail.get("status_detail"),
-                "payment_method_id": (mp_detail.get("payment_method") or {}).get("id"),
-                "payment_type_id": mp_detail.get("payment_type_id"),
-                "issuer_id": (mp_detail.get("issuer") or {}).get("id"),
-                "first_six_digits": ((mp_detail.get("card") or {}).get("first_six_digits")),
-                "last_four_digits": ((mp_detail.get("card") or {}).get("last_four_digits")),
-                "date_created": mp_detail.get("date_created"),
-            }
-        except PaymentGatewayError as error:
-            diagnostics["gateway_message"] = error.user_message
 
     return diagnostics
 
