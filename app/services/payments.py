@@ -45,11 +45,6 @@ def _guess_payment_method_id(card_number: str) -> str:
     return "visa"
 
 
-def charge_mercadopago_card(
-def get_mercadopago_payment_details(*, access_token: str, payment_id: str) -> dict:
-
-
-
 def charge_stripe_card_with_split(
     *,
     amount: float,
