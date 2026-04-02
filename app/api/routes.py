@@ -23,6 +23,8 @@ from app.schemas.schemas import (
     CloudinaryUploadResponse,
     CreatePaymentIntentRequest,
     CreatePaymentIntentResponse,
+    CreatePaymentMethodRequest,
+    CreatePaymentMethodResponse,
     DeviceTokenCreate,
     LoginRequest,
     LogoutRequest,
