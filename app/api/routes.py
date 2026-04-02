@@ -92,64 +92,6 @@ def _require_customer_user(current_user: User) -> User:
     if current_user.role.value != "customer":
         raise HTTPException(status_code=403, detail="Acceso solo para cliente")
     return current_user
-from app.db.models import (
-    DeviceToken,
-    Order,
-    OrderItem,
-    OrderStatus,
-    OrderTrackingEvent,
-    Payment,
-    PaymentStatus,
-    Product,
-    ProductOption,
-    RevokedToken,
-    User,
-    UserRole,
-)
-from app.schemas.schemas import (
-    AuthResponse,
-    CardPaymentRequest,
-    CloudinaryUploadRequest,
-    CloudinaryUploadResponse,
-    CreatePaymentIntentRequest,
-    CreatePaymentIntentResponse,
-    DeviceTokenCreate,
-    LoginRequest,
-    LogoutRequest,
-    RefreshTokenRequest,
-    OrderCreate,
-    OrderRead,
-    ProductCreate,
-    ProductOptionCreate,
-    ProductRead,
-    ProductUpdate,
-    UpdateOrderStatus,
-    UserCreate,
-    UserRead,
-    UserUpdate,
-    StorePublicProfile,
-)
-from app.services.auth import hash_password, verify_password
-from app.services.cloudinary_media import (
-    is_cloudinary_configured,
-    normalize_external_image_url,
-    save_local_image_file,
-    upload_image_file,
-    upload_image_from_url,
-)
-from app.services.jwt import create_access_token, create_refresh_token, decode_access_token
-from app.services.notifications import send_push_to_tokens, tokens_for_user_ids
-from app.services.payments import (
-    PaymentGatewayError,
-    charge_mercadopago_card,
-    create_mercadopago_card_token,
-    create_payment_intent,
-    get_mercadopago_payment_details,
-)
-from app.services.pricing import calculate_custom_price
-from datetime import datetime, timezone, timedelta
-from sqlalchemy.orm import Session, joinedload
-router = APIRouter()
 
 @router.post("/payments/{order_id}/confirm-user")
 def confirm_user_payment(order_id: int, code: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -351,39 +293,8 @@ from app.services.cloudinary_media import (
     upload_image_file,
     upload_image_from_url,
 )
-from app.services.jwt import create_access_token, create_refresh_token, decode_access_token
-from app.services.notifications import send_push_to_tokens, tokens_for_user_ids
-from app.services.payments import (
-    PaymentGatewayError,
-    charge_mercadopago_card,
-    create_mercadopago_card_token,
-    create_payment_intent,
-    get_mercadopago_payment_details,
-)
-from app.services.pricing import calculate_custom_price
 
-router = APIRouter()
 security = HTTPBearer(auto_error=False)
-
-
-def _mp_status_detail_message(status_detail: str | None) -> str:
-    code = (status_detail or "").lower()
-    mapping = {
-        "cc_rejected_bad_filled_card_number": "El número de tarjeta es inválido. Verifícalo e inténtalo de nuevo.",
-        "cc_rejected_bad_filled_date": "La fecha de vencimiento es inválida.",
-        "cc_rejected_bad_filled_security_code": "El código de seguridad (CVV) es inválido.",
-        "cc_rejected_blacklist": "La tarjeta no puede procesarse. Prueba con otro medio de pago.",
-        "cc_rejected_call_for_authorize": "Debes autorizar el pago con tu banco.",
-        "cc_rejected_card_disabled": "La tarjeta está deshabilitada. Contacta a tu banco.",
-        "cc_rejected_duplicated_payment": "Este pago parece duplicado. Revisa tus movimientos antes de reintentar.",
-        "cc_rejected_high_risk": "El pago fue rechazado por validaciones de seguridad. Prueba con otra tarjeta.",
-        "cc_rejected_insufficient_amount": "Fondos insuficientes en la tarjeta.",
-        "cc_rejected_invalid_installments": "La cantidad de cuotas no es válida para esta tarjeta.",
-        "cc_rejected_max_attempts": "Llegaste al máximo de intentos permitidos. Intenta más tarde.",
-        "cc_rejected_other_reason": "El banco rechazó el pago. Prueba con otra tarjeta.",
-        "cc_rejected_bad_filled_other": "Hay datos de la tarjeta incompletos o incorrectos.",
-    }
-    return mapping.get(code, "El pago no pudo procesarse. Verifica los datos e inténtalo nuevamente.")
 
 
 def _finalize_approved_payment(db: Session, order: Order, payment: Payment, message: str) -> None:
@@ -1038,62 +949,6 @@ def pay_with_card(
             "card_last4": digits[-4:],
             "status": payment.status,
             "mode": "fake",
-        }
-
-    if provider in {"mercadopago", "mercado_pago"}:
-        if not settings.mercadopago_public_key or not settings.mercadopago_access_token:
-            raise HTTPException(status_code=500, detail="El método de pago no está disponible temporalmente")
-
-        try:
-            card_token = create_mercadopago_card_token(
-                public_key=settings.mercadopago_public_key,
-                card_number=digits,
-                security_code=payload.security_code,
-                expiry_month=payload.expiry_month,
-                expiry_year=payload.expiry_year,
-                holder_name=payload.holder_name,
-            )
-            payment_method_id = "visa" if digits.startswith("4") else "master"
-            mp_payment = charge_mercadopago_card(
-                access_token=settings.mercadopago_access_token,
-                amount=payment.amount,
-                order_id=order.id,
-                payer_email=current_user.email,
-                card_token=card_token,
-                payment_method_id=payment_method_id,
-            )
-        except PaymentGatewayError as error:
-            payment.status = PaymentStatus.failed
-            db.commit()
-            raise HTTPException(
-                status_code=402,
-                detail={
-                    "message": _mp_status_detail_message(error.status_detail) if error.status_detail else error.user_message,
-                    "status_detail": error.status_detail,
-                    "gateway": "mercadopago",
-                },
-            ) from error
-        except Exception as error:
-            payment.status = PaymentStatus.failed
-            db.commit()
-            raise HTTPException(status_code=402, detail="El pago fue rechazado por la pasarela") from error
-
-        mp_status = (mp_payment.get("status") or "").lower()
-        payment.provider_reference = str(mp_payment.get("id") or f"{provider}_card_ending_{digits[-4:]}")
-        payment.status = PaymentStatus.approved if mp_status == "approved" else PaymentStatus.failed
-        if payment.status == PaymentStatus.approved:
-            _finalize_approved_payment(db, order, payment, "Pago recibido. Pedido confirmado.")
-        db.commit()
-        return {
-            "ok": payment.status == PaymentStatus.approved,
-            "order_id": payload.order_id,
-            "provider": provider,
-            "payment_id": mp_payment.get("id"),
-            "status": mp_status or payment.status,
-            "status_detail": mp_payment.get("status_detail"),
-            "message": "Pago aprobado correctamente" if payment.status == PaymentStatus.approved else _mp_status_detail_message(mp_payment.get("status_detail")),
-            "card_last4": digits[-4:],
-            "mode": "real",
         }
 
     if provider == "stripe":
