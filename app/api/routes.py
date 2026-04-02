@@ -60,6 +60,8 @@ from sqlalchemy.orm import Session, joinedload
 
 security = HTTPBearer(auto_error=False)
 
+router = APIRouter()
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db),
