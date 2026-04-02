@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     stripe_secret_key: str = ""
     stripe_currency: str = "mxn"
+    stripe_connected_account_id: str = ""
+    stripe_webhook_secret: str = ""
+    platform_fee_percent: float = 5.0
     payment_provider: str = "mercadopago"
     mercadopago_public_key: str = ""
     mercadopago_access_token: str = ""

@@ -52,6 +52,7 @@ from app.services.notifications import send_push_to_tokens, tokens_for_user_ids
 from app.services.payments import (
     PaymentGatewayError,
     charge_mercadopago_card,
+    charge_stripe_card_with_split,
     create_mercadopago_card_token,
     create_payment_intent,
     get_mercadopago_payment_details,
@@ -386,6 +387,27 @@ def _mp_status_detail_message(status_detail: str | None) -> str:
         "cc_rejected_bad_filled_other": "Hay datos de la tarjeta incompletos o incorrectos.",
     }
     return mapping.get(code, "El pago no pudo procesarse. Verifica los datos e inténtalo nuevamente.")
+
+
+def _finalize_approved_payment(db: Session, order: Order, payment: Payment, message: str) -> None:
+    order.status = OrderStatus.created
+    db.add(
+        OrderTrackingEvent(
+            order_id=order.id,
+            status=OrderStatus.created,
+            message=message,
+            eta_minutes=90,
+        )
+    )
+
+    store_user = _get_existing_store(db)
+    if not store_user:
+        return
+
+    title = "Pago recibido"
+    body = f"El pedido #{order.id} fue pagado correctamente."
+    tokens = tokens_for_user_ids(db, [store_user.id])
+    send_push_to_tokens(tokens, title=title, body=body, data={"order_id": str(order.id), "status": "created"})
 
 
 def _get_existing_store(db: Session) -> User | None:
@@ -989,7 +1011,7 @@ def confirm_payment(
 @router.post("/payments/card")
 def pay_with_card(
     payload: CardPaymentRequest,
-    payment_provider: str = Header(default="mercadopago", alias="X-Payment-Provider"),
+    payment_provider: str = Header(default="stripe", alias="X-Payment-Provider"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1005,19 +1027,12 @@ def pay_with_card(
     if len(digits) < 13:
         raise HTTPException(status_code=400, detail="Tarjeta inválida")
 
-    provider = (payment_provider or settings.payment_provider or "mercadopago").lower()
+    provider = (payment_provider or settings.payment_provider or "stripe").lower()
     payment.provider = provider
     if settings.enable_fake_payments:
         payment.provider_reference = f"{provider}_card_ending_{digits[-4:]}"
         payment.status = PaymentStatus.approved
-        # Confirmar pedido tras pago exitoso
-        order.status = OrderStatus.created
-        db.add(OrderTrackingEvent(
-            order_id=order.id,
-            status=OrderStatus.created,
-            message="Pedido creado y confirmado",
-            eta_minutes=90,
-        ))
+        _finalize_approved_payment(db, order, payment, "Pago recibido. Pedido confirmado.")
         db.commit()
         return {
             "ok": True,
@@ -1070,13 +1085,7 @@ def pay_with_card(
         payment.provider_reference = str(mp_payment.get("id") or f"{provider}_card_ending_{digits[-4:]}")
         payment.status = PaymentStatus.approved if mp_status == "approved" else PaymentStatus.failed
         if payment.status == PaymentStatus.approved:
-            order.status = OrderStatus.created
-            db.add(OrderTrackingEvent(
-                order_id=order.id,
-                status=OrderStatus.created,
-                message="Pedido creado y confirmado",
-                eta_minutes=90,
-            ))
+            _finalize_approved_payment(db, order, payment, "Pago recibido. Pedido confirmado.")
         db.commit()
         return {
             "ok": payment.status == PaymentStatus.approved,
@@ -1090,15 +1099,62 @@ def pay_with_card(
             "mode": "real",
         }
 
+    if provider == "stripe":
+        if not settings.stripe_secret_key:
+            raise HTTPException(status_code=500, detail="Stripe no está configurado")
+        if not settings.stripe_connected_account_id:
+            raise HTTPException(status_code=500, detail="No se configuró la cuenta Stripe del vendedor")
+
+        try:
+            stripe_result = charge_stripe_card_with_split(
+                amount=payment.amount,
+                order_id=order.id,
+                payer_email=current_user.email,
+                card_number=digits,
+                security_code=payload.security_code,
+                expiry_month=payload.expiry_month,
+                expiry_year=payload.expiry_year,
+                holder_name=payload.holder_name,
+                connected_account_id=settings.stripe_connected_account_id,
+                platform_fee_percent=settings.platform_fee_percent,
+            )
+        except PaymentGatewayError as error:
+            payment.status = PaymentStatus.failed
+            db.commit()
+            raise HTTPException(status_code=402, detail=error.user_message) from error
+        except Exception as error:
+            payment.status = PaymentStatus.failed
+            db.commit()
+            raise HTTPException(status_code=402, detail="El pago fue rechazado por Stripe") from error
+
+        paid = bool(stripe_result.get("paid"))
+        status = (stripe_result.get("status") or "").lower()
+        payment.provider_reference = str(stripe_result.get("id") or f"stripe_card_ending_{digits[-4:]}")
+        payment.status = PaymentStatus.approved if paid and status in {"succeeded"} else PaymentStatus.failed
+        if payment.status == PaymentStatus.approved:
+            _finalize_approved_payment(db, order, payment, "Pago recibido por Stripe. Pedido confirmado.")
+        db.commit()
+
+        amount_cents = int(stripe_result.get("amount") or 0)
+        fee_cents = int(stripe_result.get("application_fee_amount") or 0)
+        seller_cents = max(0, amount_cents - fee_cents)
+        return {
+            "ok": payment.status == PaymentStatus.approved,
+            "order_id": payload.order_id,
+            "provider": provider,
+            "payment_id": stripe_result.get("id"),
+            "status": status or payment.status,
+            "message": "Pago aprobado correctamente" if payment.status == PaymentStatus.approved else "Pago rechazado",
+            "card_last4": digits[-4:],
+            "platform_fee_amount": round(fee_cents / 100.0, 2),
+            "seller_amount": round(seller_cents / 100.0, 2),
+            "platform_fee_percent": settings.platform_fee_percent,
+            "mode": "real",
+        }
+
     payment.provider_reference = f"{provider}_card_ending_{digits[-4:]}"
     payment.status = PaymentStatus.approved
-    order.status = OrderStatus.created
-    db.add(OrderTrackingEvent(
-        order_id=order.id,
-        status=OrderStatus.created,
-        message="Pedido creado y confirmado",
-        eta_minutes=90,
-    ))
+    _finalize_approved_payment(db, order, payment, "Pago recibido. Pedido confirmado.")
     db.commit()
     return {
         "ok": True,

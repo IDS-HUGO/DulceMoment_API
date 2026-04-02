@@ -77,8 +77,19 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 - Verificación rápida: `GET /api/v1/media/cloudinary/status` (rol tienda) retorna `{ "configured": true|false }`.
 
 ## 7) Pagos con tarjeta
-- Producción: define `STRIPE_SECRET_KEY` y `ENABLE_FAKE_PAYMENTS=false`.
-- Desarrollo: `ENABLE_FAKE_PAYMENTS=true` (aprobación simulada).
+- Producción con Stripe Connect (recomendado para split automático):
+	- `PAYMENT_PROVIDER=stripe`
+	- `STRIPE_SECRET_KEY=<tu_secret_key>`
+	- `STRIPE_CONNECTED_ACCOUNT_ID=<acct_xxx del vendedor>`
+	- `PLATFORM_FEE_PERCENT=5.0`
+	- `ENABLE_FAKE_PAYMENTS=false`
+- Resultado del split: 5% para la plataforma y 95% al vendedor conectado.
+- Producción con Mercado Pago:
+	- `PAYMENT_PROVIDER=mercadopago`
+	- `MERCADOPAGO_PUBLIC_KEY` y `MERCADOPAGO_ACCESS_TOKEN`
+	- `ENABLE_FAKE_PAYMENTS=false`
+- `ENABLE_FAKE_PAYMENTS=true` solo sirve para pruebas locales y no cobra dinero real.
+- Al aprobarse el pago, el backend marca el pedido como confirmado y notifica al vendedor.
 
 ## 8) Setup rápido en Ubuntu/EC2
 

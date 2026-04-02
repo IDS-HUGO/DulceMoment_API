@@ -129,3 +129,63 @@ def get_mercadopago_payment_details(*, access_token: str, payment_id: str) -> di
         if response.status_code >= 400:
             raise PaymentGatewayError("No se pudo consultar el detalle del pago", gateway_payload={"payment_id": payment_id})
         return response.json()
+
+
+def charge_stripe_card_with_split(
+    *,
+    amount: float,
+    order_id: int,
+    payer_email: str,
+    card_number: str,
+    security_code: str,
+    expiry_month: int,
+    expiry_year: int,
+    holder_name: str,
+    connected_account_id: str,
+    platform_fee_percent: float,
+) -> dict:
+    if not settings.stripe_secret_key:
+        raise PaymentGatewayError("Pagos con Stripe no configurados")
+    if not connected_account_id:
+        raise PaymentGatewayError("Cuenta de vendedor Stripe no configurada")
+
+    amount_cents = max(1, int(round(amount * 100)))
+    fee_cents = int(round(amount_cents * (platform_fee_percent / 100.0)))
+    fee_cents = max(0, min(fee_cents, amount_cents))
+
+    try:
+        token = stripe.Token.create(
+            card={
+                "number": card_number,
+                "exp_month": expiry_month,
+                "exp_year": expiry_year,
+                "cvc": security_code,
+                "name": holder_name,
+            }
+        )
+
+        charge = stripe.Charge.create(
+            amount=amount_cents,
+            currency=settings.stripe_currency,
+            source=token.id,
+            description=f"DulceMoment pedido #{order_id}",
+            receipt_email=payer_email,
+            application_fee_amount=fee_cents,
+            transfer_data={"destination": connected_account_id},
+            metadata={
+                "order_id": str(order_id),
+                "platform_fee_percent": str(platform_fee_percent),
+            },
+        )
+    except stripe.error.StripeError as error:
+        message = getattr(error, "user_message", None) or str(error)
+        raise PaymentGatewayError(f"Pago rechazado: {message}") from error
+
+    return {
+        "id": charge.get("id"),
+        "status": charge.get("status"),
+        "paid": bool(charge.get("paid")),
+        "amount": amount_cents,
+        "application_fee_amount": fee_cents,
+        "destination": connected_account_id,
+    }
