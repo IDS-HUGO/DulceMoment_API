@@ -139,6 +139,10 @@ def charge_stripe_payment_method(
             currency=settings.stripe_currency,
             payment_method=payment_method_id,
             confirm=True,
+            automatic_payment_methods={
+                "enabled": True,
+                "allow_redirects": "never",
+            },
             description=f"DulceMoment pedido #{order_id}",
             receipt_email=payer_email,
             application_fee_amount=fee_cents,
