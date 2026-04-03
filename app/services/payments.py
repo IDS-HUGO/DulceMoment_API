@@ -7,6 +7,11 @@ if settings.stripe_secret_key:
     stripe.api_key = settings.stripe_secret_key
 
 
+def _minimum_amount_cents(currency: str) -> int:
+    # Stripe minimums vary by currency. For MXN the minimum is 10.00 MXN.
+    return 1000 if (currency or "").lower() == "mxn" else 50
+
+
 class PaymentGatewayError(Exception):
     def __init__(self, user_message: str, *, status_detail: str = "", gateway_payload: dict | None = None):
         super().__init__(user_message)
@@ -128,6 +133,13 @@ def charge_stripe_payment_method(
         raise PaymentGatewayError("Pagos con Stripe no configurados")
 
     amount_cents = max(1, int(round(amount * 100)))
+    minimum_cents = _minimum_amount_cents(settings.stripe_currency)
+    if amount_cents < minimum_cents:
+        minimum_value = minimum_cents / 100
+        raise PaymentGatewayError(
+            user_message=f"El monto minimo para pagos con tarjeta es {minimum_value:.2f} {settings.stripe_currency.upper()}."
+        )
+
     use_connect = bool(connected_account_id)
     fee_cents = int(round(amount_cents * (platform_fee_percent / 100.0))) if use_connect else 0
     fee_cents = max(0, min(fee_cents, amount_cents))
