@@ -126,32 +126,35 @@ def charge_stripe_payment_method(
     """
     if not settings.stripe_secret_key:
         raise PaymentGatewayError("Pagos con Stripe no configurados")
-    if not connected_account_id:
-        raise PaymentGatewayError("Cuenta de vendedor Stripe no configurada")
 
     amount_cents = max(1, int(round(amount * 100)))
-    fee_cents = int(round(amount_cents * (platform_fee_percent / 100.0)))
+    use_connect = bool(connected_account_id)
+    fee_cents = int(round(amount_cents * (platform_fee_percent / 100.0))) if use_connect else 0
     fee_cents = max(0, min(fee_cents, amount_cents))
 
+    create_payload = {
+        "amount": amount_cents,
+        "currency": settings.stripe_currency,
+        "payment_method": payment_method_id,
+        "confirm": True,
+        "automatic_payment_methods": {
+            "enabled": True,
+            "allow_redirects": "never",
+        },
+        "description": f"DulceMoment pedido #{order_id}",
+        "receipt_email": payer_email,
+        "metadata": {
+            "order_id": str(order_id),
+            "platform_fee_percent": str(platform_fee_percent),
+            "connect_mode": "true" if use_connect else "false",
+        },
+    }
+    if use_connect:
+        create_payload["application_fee_amount"] = fee_cents
+        create_payload["transfer_data"] = {"destination": connected_account_id}
+
     try:
-        intent = stripe.PaymentIntent.create(
-            amount=amount_cents,
-            currency=settings.stripe_currency,
-            payment_method=payment_method_id,
-            confirm=True,
-            automatic_payment_methods={
-                "enabled": True,
-                "allow_redirects": "never",
-            },
-            description=f"DulceMoment pedido #{order_id}",
-            receipt_email=payer_email,
-            application_fee_amount=fee_cents,
-            transfer_data={"destination": connected_account_id},
-            metadata={
-                "order_id": str(order_id),
-                "platform_fee_percent": str(platform_fee_percent),
-            },
-        )
+        intent = stripe.PaymentIntent.create(**create_payload)
     except stripe.error.CardError as e:
         raise PaymentGatewayError(
             user_message="El pago no pudo procesarse. Revisa la tarjeta e inténtalo de nuevo.",
@@ -168,5 +171,5 @@ def charge_stripe_payment_method(
         "paid": intent.get("status") == "succeeded",
         "amount": amount_cents,
         "application_fee_amount": fee_cents,
-        "destination": connected_account_id,
+        "destination": connected_account_id or "",
     }

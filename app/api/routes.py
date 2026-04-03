@@ -987,8 +987,6 @@ def pay_with_card(
     if provider == "stripe":
         if not settings.stripe_secret_key:
             raise HTTPException(status_code=500, detail="Stripe no esta configurado")
-        if not settings.stripe_connected_account_id:
-            raise HTTPException(status_code=500, detail="No se configuro la cuenta Stripe del vendedor")
 
         try:
             stripe_result = charge_stripe_payment_method(
