@@ -1000,11 +1000,24 @@ def pay_with_card(
         except PaymentGatewayError as error:
             payment.status = PaymentStatus.failed
             db.commit()
-            raise HTTPException(status_code=402, detail=error.user_message) from error
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "message": error.user_message,
+                    "stripe_detail": error.status_detail[:600] if error.status_detail else "",
+                    "stripe_payload": error.gateway_payload,
+                },
+            ) from error
         except Exception as error:
             payment.status = PaymentStatus.failed
             db.commit()
-            raise HTTPException(status_code=402, detail="El pago fue rechazado por Stripe") from error
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "message": "El pago fue rechazado por Stripe",
+                    "stripe_detail": str(error)[:600],
+                },
+            ) from error
 
         paid = bool(stripe_result.get("paid"))
         status = (stripe_result.get("status") or "").lower()

@@ -163,7 +163,10 @@ def charge_stripe_payment_method(
         )
     except stripe.error.StripeError as error:
         message = getattr(error, "user_message", None) or str(error)
-        raise PaymentGatewayError(f"Pago rechazado: {message}") from error
+        raise PaymentGatewayError(
+            f"Pago rechazado: {message}",
+            status_detail=str(error),
+        ) from error
 
     return {
         "id": intent.get("id"),
