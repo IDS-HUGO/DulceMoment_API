@@ -60,6 +60,9 @@ from app.services.payments import (
 from app.services.pricing import calculate_custom_price
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import Session, joinedload
+import logging
+
+logger = logging.getLogger(__name__)
 
 security = HTTPBearer(auto_error=False)
 
@@ -1000,6 +1003,13 @@ def pay_with_card(
         except PaymentGatewayError as error:
             payment.status = PaymentStatus.failed
             db.commit()
+            logger.error(
+                "Stripe payment gateway error order_id=%s user_id=%s detail=%s payload=%s",
+                payload.order_id,
+                current_user.id,
+                error.status_detail,
+                error.gateway_payload,
+            )
             raise HTTPException(
                 status_code=402,
                 detail={
@@ -1011,6 +1021,11 @@ def pay_with_card(
         except Exception as error:
             payment.status = PaymentStatus.failed
             db.commit()
+            logger.exception(
+                "Unexpected Stripe payment error order_id=%s user_id=%s",
+                payload.order_id,
+                current_user.id,
+            )
             raise HTTPException(
                 status_code=402,
                 detail={

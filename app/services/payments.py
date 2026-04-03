@@ -163,6 +163,14 @@ def charge_stripe_payment_method(
         )
     except stripe.error.StripeError as error:
         message = getattr(error, "user_message", None) or str(error)
+        lowered = message.lower()
+        if "no such paymentmethod" in lowered or "a similar object exists in" in lowered:
+            message = (
+                "PaymentMethod no encontrado. Probable mezcla de modo Stripe (pk_test/sk_test vs pk_live/sk_live). "
+                "Asegura que app y backend usen el mismo modo y la misma cuenta."
+            )
+        elif "invalid api key" in lowered or "you did not provide an api key" in lowered:
+            message = "Clave secreta de Stripe inválida o ausente en backend. Verifica STRIPE_SECRET_KEY en EC2."
         raise PaymentGatewayError(
             f"Pago rechazado: {message}",
             status_detail=str(error),
