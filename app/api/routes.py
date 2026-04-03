@@ -800,8 +800,15 @@ def list_orders(
     if current_user.role.value == "customer":
         query = query.filter(Order.customer_id == current_user.id)
     elif current_user.role.value == "store":
-        # Solo mostrar pedidos confirmados y pagados
-        query = query.join(Payment).filter(Order.status == OrderStatus.created, Payment.status == PaymentStatus.approved)
+        # Mostrar todos los pedidos ya pagados durante todo su ciclo operativo
+        visible_statuses = [
+            OrderStatus.created,
+            OrderStatus.in_oven,
+            OrderStatus.decorating,
+            OrderStatus.on_the_way,
+            OrderStatus.delivered,
+        ]
+        query = query.join(Payment).filter(Order.status.in_(visible_statuses), Payment.status == PaymentStatus.approved)
     elif customer_id:
         query = query.filter(Order.customer_id == customer_id)
     orders = query.all()
